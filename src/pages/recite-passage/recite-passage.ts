@@ -5,6 +5,8 @@ import { HTTP } from '@ionic-native/http';
 import { Storage } from "@ionic/storage";
 import { ENV } from '../../environments/environment';
 import { EmojiMap } from './emoji-map';
+import { Media, MediaObject } from '@ionic-native/media';
+import { File } from '@ionic-native/file';
 
 const _SpeechRecognition =
   (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -38,15 +40,23 @@ export class RecitePassagePage {
   speechEnabled = false;
   speechReady = false;
   passageReceived = false;
+  fetchingPassageAudio = false;
+  passageAudioFailed = false;
   passageAudio = null;
   playPauseIcon: String = 'play';
   willPause = false;
   settings;
   contentClass = "recite-passage";
 
+  viewClosed = false;
+  isListening = false;
   recognition;
   autoRestartCount = 0;
-  isListening = false;
+  filePath: string;
+  fileName: string;
+  audio: MediaObject;
+  isRecording = false;
+  hasRecorded = false;
   lastStartedAt;
 
   constructor(public navCtrl: NavController,
@@ -59,7 +69,9 @@ export class RecitePassagePage {
               private musicControls: MusicControls,
               private http: HTTP,
               // private network: Network,
-              private _ngZone: NgZone) {
+              private _ngZone: NgZone,
+              private media: Media,
+              private file: File) {
     this.storage.get("stored_settings").then((settings) => {
       this.settings = settings;
       if (settings.sansforgetica) this.contentClass = "recite-passage forgetica-enabled"
@@ -155,7 +167,7 @@ export class RecitePassagePage {
           return part;
         });
 
-        this.registerSpeechRecognition();
+        //this.registerSpeechRecognition();
       });
     });
   }
@@ -490,23 +502,51 @@ export class RecitePassagePage {
       return;
     }
 
-    if (!this.passageAudio) {
-      const progressCircle = <HTMLElement>document.querySelector('.btnPlayPause__icon');
-      progressCircle.style.setProperty('--progress', '0deg');
+    if (!this.passageAudio && !this.fetchingPassageAudio) {
+      this.fetchingPassageAudio = true;
       this.passageReceived = false;
-      const passageUrl = `https://api.esv.org/v3/passage/audio/?q=${ this.reference.replace(/\s/g, '+')}`;
-      this.http.get(passageUrl, {}, {'Authorization': ENV.esvApiKey})
+
+      const progressCircle = document.querySelector('.btnPlayPause__icon') as HTMLElement;
+      progressCircle.style.setProperty('--progress', '0deg');
+
+      const passageUrl = `https://api.esv.org/v3/passage/audio/?q=${this.reference.replace(/\s/g, '+')}`;
+      console.log(`Requesting URL: ${passageUrl}`);
+
+      this.http.setRequestTimeout(15);
+      this.http.setDataSerializer('json');
+      this.http.get(passageUrl, {}, { Authorization: ENV.esvApiKey })
         .then(response => {
+          this.fetchingPassageAudio = false;
+          if (this.viewClosed) return;
           this.passageReceived = true;
-          console.log(response.status);
-          console.log(response.headers);
-          console.log(response.url);
-          this.passageAudio = new Audio(response.url);
+
+          console.log('Response status:', response.status);
+          console.log('Content-Type:', response.headers['content-type']);
+          console.log('Response URL:', response.url);
+
+          let audioUrl = null;
+          // Case 1: JSON metadata (normal API response)
+          if (response.headers['content-type'] && response.headers['content-type'].includes('application/json')) {
+            const data = JSON.parse(response.data);
+            audioUrl = data.audio_files && data.audio_files.length > 0 ? data.audio_files[0].url : null;
+            if (!audioUrl) throw new Error('No audio file URL found');
+            console.log('Resolved audio URL:', audioUrl);
+          // Case 2: Direct MP3 response (audio/mpeg)
+          } else if (response.headers['content-type'] && response.headers['content-type'].includes('audio/mpeg')) {
+            audioUrl = response.url || passageUrl;
+            console.log('Direct audio file returned:', audioUrl);
+          } else {
+            throw new Error('Unexpected response type');
+          }
+
+          // Play audio via browser Audio API
+          this.passageAudio = new Audio(audioUrl);
           this.passageAudio.play();
           this.playPauseIcon = 'pause';
 
           this.passageAudio.addEventListener('ended', () => {
             progressCircle.style.setProperty('--progress', '0deg');
+            this.finishPassage();
             if (this.settings.audioContinuation) {
               if (this.nextPassageExists) {
                 this.swipeLeftEvent();
@@ -521,24 +561,33 @@ export class RecitePassagePage {
           }, false);
 
           this.passageAudio.addEventListener('timeupdate', function() {
-            let progressDegrees = (this.currentTime/this.duration) * 360;
+            const progressDegrees = (this.currentTime / this.duration) * 360;
             progressCircle.style.setProperty('--progress', `${progressDegrees}deg`);
           }, false);
 
           if (this.platform.is('android')) {
             //this.subscribeToMusicControls();
           }
-        }).catch(error => { console.log('HTTP error: ' + error); });
+        })
+        .catch(error => {
+          this.fetchingPassageAudio = false;
+          this.passageAudioFailed = true;
+          console.error('HTTP error Status:', error.status);
+          console.error('Error message:', error.error);
+          console.error('Headers:', error.headers);
+          //this.shown.unshift(error.status);
+          //this.shown.unshift(error.error);
+        });
 
       this.indicateDownloading(0);
     } else {
-      if (this.passageAudio.paused) {
+      if (this.passageAudio && this.passageAudio.paused) {
         this.passageAudio.play();
         this.playPauseIcon = 'pause';
         if (this.platform.is('android')) {
           //this.musicControls.updateIsPlaying(true);
         }
-      } else {
+      } else if (this.passageAudio) {
         this.passageAudio.pause();
         this.playPauseIcon = 'play';
         if (this.platform.is('android')) {
@@ -554,6 +603,9 @@ export class RecitePassagePage {
       this._ngZone.run(() => {
         if (this.passageReceived) {
           progressCircle.style.setProperty('--progress', '0deg');
+        } else if (this.passageAudioFailed) {
+          progressCircle.style.setProperty('--progress', '0deg');
+          this.passageAudioFailed = false;
         } else {
           waitingProgress = waitingProgress + 5
           if (waitingProgress > 360) {
@@ -686,19 +738,15 @@ export class RecitePassagePage {
   }
 
   ionViewWillLeave() {
-    if (this.isListening) {
-      this.isListening = false;
-      this.recognition.stop();
+    if (this.isRecording ) {
+      this.stopRecording();
     }
-    if (this.passageAudio && !this.passageAudio.paused) {
-      this.passageAudio.pause();
-      this.playPauseIcon = 'play';
-      if (this.platform.is('android')) {
-        //this.musicControls.updateIsPlaying(false);
-      }
-    }
+
+    const audio = this.passageAudio; // <-- clone reference
+    if (audio && !audio.paused) audio.pause();
     if (this.passageAudio) {
       this.passageAudio.currentTime = 0;
+      this.playPauseIcon = 'play';
       this.passageAudio = null;
       if (this.platform.is('android')) {
         //this.musicControls.destroy();
@@ -706,7 +754,51 @@ export class RecitePassagePage {
     }
   }
 
-  registerSpeechRecognition() {
+  ionViewDidLeave() {
+    this.viewClosed = true;
+  }
+
+  async startRecording() {
+    if (!this.platform.is('cordova')) {
+      console.warn('Recording only works on device.');
+      return;
+    }
+
+    const now = new Date();
+    const formatted = now.toISOString().replace('T', '_').replace('Z', '').replace(/[:.]/g, '-');
+    this.fileName = `${this.reference} ${formatted}.m4a`;
+
+    if (this.platform.is('ios')) {
+      this.filePath = this.file.documentsDirectory.replace(/^file:\/\//, '') + this.fileName;
+    } else {
+      this.filePath = this.file.externalDataDirectory.replace(/^file:\/\//, '') + this.fileName;
+    }
+
+    this.audio = this.media.create(this.filePath);
+    this.audio.startRecord();
+    this.isRecording = true;
+    this.hasRecorded = false;
+
+    console.log('Recording started:', this.filePath);
+  }
+
+  stopRecording() {
+    this.audio.stopRecord();
+    this.isRecording = false;
+    this.hasRecorded = true;
+    console.log('Recording stopped:', this.filePath);
+
+    if (this.hasRecorded) this.audio.play();
+  }
+
+  onRecite = () => {
+    if (this.isRecording)
+      this.stopRecording();
+    else
+      this.startRecording();
+  }
+
+  registerSpeechRecognition_old() {
     this.recognition = new _SpeechRecognition();
     this.recognition.continuous = true;
     this.recognition.interimResults = true;
@@ -772,6 +864,7 @@ export class RecitePassagePage {
     };
   }
 
+/*
   onRecite = () => {
     if (this.isListening) {
       this.isListening = false;
@@ -779,10 +872,11 @@ export class RecitePassagePage {
       return;
     }
 
-    if (this.counter >= this.parts.length) {
+    if (!this.readyToListen) {
+      console.log('readyToListen = false');
       let toast = this.toastCtrl.create({
-        message: 'Already at end of passage',
-        duration: 1000,
+        message: 'Speech recognition is not available, sorry',
+        duration: 2000,
         position: 'bottom'
       });
       toast.present();
@@ -793,12 +887,24 @@ export class RecitePassagePage {
     this.getNextPhrase();
     this.lastStartedAt = Date.now();
     try{
-      this.recognition.start();
+      //this.recognition.start();
+      this.speechRecognition.startListening({
+        language: 'en-US',
+        matches: 5,
+        prompt: 'Speak now'
+      }).subscribe(matches => {
+        console.log('Matched phrases:', matches);
+        // Process speech here
+      }, error => {
+        console.error('Speech recognition error:', error);
+        this.isListening = true;
+      });
     } catch {
       console.log("Starting speech recognition failed");
       this.isListening = false;
     }
   }
+*/
 
   consumeWord(word, skipped) {
     const newNextPhraseStripped = this.nextPhraseStripped.substring(skipped.length + word.length);
@@ -1025,6 +1131,7 @@ export class RecitePassagePage {
     );
   }
 */
+
   showESVCopyright() {
     let alert = this.alertCtrl.create();
     alert.setTitle('ESV');
@@ -1033,4 +1140,3 @@ export class RecitePassagePage {
     alert.present();
   }
 }
-

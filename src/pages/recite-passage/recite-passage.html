@@ -39,8 +39,13 @@
 
   <ion-toolbar color="primary">
     <ion-buttons>
-      <button ion-button (click)="onRecite()" *ngIf="speechEnabled" aria-label="Check your memorisation by reciting the passage">
-        <ion-icon name='{{ isListening === true ? "mic" : "mic-off" }}'></ion-icon>
+      <button
+        ion-button
+        (click)="onRecite()"
+        *ngIf="speechEnabled"
+        [class.recording]="isRecording"
+        aria-label="Check your memorisation by reciting the passage">
+        <ion-icon name="mic"></ion-icon>
       </button>
       <button ion-button (click)="onGoBack()" *ngIf="shown.length > 0" (press)="onHideAll()" aria-label="Hide previous segment of the passage">
         <ion-icon name="undo"></ion-icon>

@@ -1,6 +1,35 @@
 page-recite-passage {
   background-color: white;
 
+  /* 🎤 Default mic style */
+  button {
+    background-color: #004d4d;
+    color: #fff;
+    transition: background-color 0.3s ease;
+  }
+
+  button ion-icon {
+    font-size: 24px;
+  }
+
+  /* Default (not recording) mic color */
+  button:not(.recording) ion-icon {
+    color: #00b3b3; /* teal accent */
+  }
+
+  button.recording {
+    background-color: #e74c3c !important; /* red */
+    color: #fff !important; /* icon and text white */
+    transition: background-color 0.3s ease, transform 0.2s ease;
+    animation: pulse 1s infinite;
+  }
+
+  @keyframes pulse {
+    0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
+    70% { transform: scale(1.05); box-shadow: 0 0 0 10px rgba(231, 76, 60, 0); }
+    100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); }
+  }
+
   .passageContainer {
     top: 0;
     bottom: 0;
